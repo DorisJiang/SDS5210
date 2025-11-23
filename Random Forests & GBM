@@ -1,0 +1,306 @@
+```{r}
+library(readr)
+library(dplyr)
+library(caret)
+library(randomForest)
+library(dbarts)
+library(gbm)
+
+url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data"
+
+coln <- c("ID","Diagnosis", paste0(rep(c("radius","texture","perimeter","area",
+"smoothness", "compactness","concavity","concavepoints","symmetry",
+"fractaldimension"), each = 3),rep(c("mean","se","worst"), times = 10)))
+
+bc <- read_csv(url, col_names = coln)
+bc <- bc[,-1]
+```
+RF with PC1
+```{r}
+set.seed(8)
+bc1 <- bc
+bc1$Diagnosis <- factor(bc1$Diagnosis)
+pca1 <- prcomp(bc1[,-1], scale = TRUE)
+pc1 <- pca1$x[,1]
+bc1 <- data.frame(Diagnosis = bc1$Diagnosis, PC1 = pc1)
+idx1 <- createDataPartition(bc1$Diagnosis, p = 0.7, list = FALSE)
+train1 <- bc1[idx1,]
+test1  <- bc1[-idx1,]
+rfpc1 <- randomForest(Diagnosis ~ PC1, data = train1, ntree = 500, 
+importance = TRUE)
+pred1 <- predict(rfpc1, test1)
+confusionMatrix(pred1, test1$Diagnosis)
+```
+RF with Original
+```{r}
+set.seed(8)
+bc2 <- bc
+bc2$Diagnosis <- factor(bc2$Diagnosis)
+idx2 <- createDataPartition(bc2$Diagnosis, p = 0.7, list = FALSE)
+train2 <- bc2[idx2,]
+test2  <- bc2[-idx2,]
+
+rfall <- randomForest(Diagnosis ~ ., data = train2, ntree = 500,
+mtry = floor(sqrt(ncol(train2)-1)),importance = TRUE)
+
+pred2 <- predict(rfall, test2)
+confusionMatrix(pred2, test2$Diagnosis)
+```
+GBM with Original
+```{r}
+set.seed(8)
+bc3 <- bc
+bc3$Diagnosis <- ifelse(bc3$Diagnosis == "M", 1, 0)
+
+idx3 <- createDataPartition(bc3$Diagnosis, p = 0.7, list = FALSE)
+train3 <- bc3[idx3,]
+test3  <- bc3[-idx3,]
+
+gbm3 <- gbm(
+  formula = Diagnosis ~ .,
+  data = train3,
+  distribution = "bernoulli",
+  n.trees = 5000,
+  interaction.depth = 3,
+  shrinkage = 0.05,
+  n.minobsinnode = 10,
+  bag.fraction = 0.7,
+  cv.folds = 0,
+  keep.data = TRUE,
+  verbose = FALSE
+)
+
+best3 <- gbm.perf(gbm3, method = "OOB")
+
+prob3 <- predict(gbm3, newdata = test3, n.trees = best3, type = "response")
+pred3 <- ifelse(prob3 > 0.5, 1, 0)
+
+pred3 <- factor(pred3, levels = c(0,1))
+truth3 <- factor(test3$Diagnosis, levels = c(0,1))
+
+confusionMatrix(pred3, truth3, positive = "1")
+```
+GBM with PC1
+```{r}
+set.seed(8)
+
+bc4 <- bc
+bc4$Diagnosis <- ifelse(bc4$Diagnosis == "M", 1, 0)
+
+pca4 <- prcomp(bc4[,-1], scale = TRUE)
+pc1_4 <- pca4$x[,1]
+bc4 <- data.frame(Diagnosis = bc4$Diagnosis, PC1 = pc1_4)
+
+idx4 <- createDataPartition(bc4$Diagnosis, p = 0.7, list = FALSE)
+train4 <- bc4[idx4,]
+test4  <- bc4[-idx4,]
+
+gbm4 <- gbm(
+  formula = Diagnosis ~ PC1,
+  data = train4,
+  distribution = "bernoulli",
+  n.trees = 5000,
+  interaction.depth = 3,
+  shrinkage = 0.05,
+  n.minobsinnode = 10,
+  bag.fraction = 0.7,
+  cv.folds = 0,
+  keep.data = TRUE,
+  verbose = FALSE
+)
+
+best4 <- gbm.perf(gbm4, method = "OOB")
+
+prob4 <- predict(gbm4, newdata = test4, n.trees = best4, type = "response")
+pred4 <- ifelse(prob4 > 0.5, 1, 0)
+
+pred4 <- factor(pred4, levels = c(0,1))
+truth4 <- factor(test4$Diagnosis, levels = c(0,1))
+
+confusionMatrix(pred4, truth4, positive = "1")
+```
+Random Forest (Original) CV and Bootstrap
+```{r}
+library(caret)
+library(randomForest)
+set.seed(8)
+
+bcRF <- bc
+bcRF$Diagnosis <- factor(bcRF$Diagnosis)
+
+control <- trainControl(method = "cv", number = 10)
+
+rfOrigCV <- train(Diagnosis ~ ., data = bcRF, method = "rf", 
+trControl = control, tuneLength = 5)
+rfOrigCV
+#Bootstrap
+set.seed(8)
+B <- 200
+acc_rf_orig <- numeric(B)
+
+for(b in 1:B){
+idx <- sample(1:nrow(bcRF), replace = TRUE)
+boot_train <- bcRF[idx, ]
+oob <- setdiff(1:nrow(bcRF), idx)
+boot_test <- bcRF[oob, ]
+
+rf_temp <- randomForest(Diagnosis ~ ., data = boot_train, ntree = 500)
+
+pred <- predict(rf_temp, boot_test)
+acc_rf_orig[b] <- mean(pred == boot_test$Diagnosis)
+}
+
+summary(acc_rf_orig)
+
+```
+Random Forest PC1 CV & Bootstrap
+```{r}
+library(caret)
+library(randomForest)
+set.seed(8)
+
+pcaObj <- prcomp(bc[ , -1], scale. = TRUE)
+PC1 <- pcaObj$x[,1]
+
+bcPC1 <- data.frame(Diagnosis = factor(bc$Diagnosis), PC1 = PC1)
+
+control <- trainControl(method = "cv", number = 10)
+
+rfPC1CV <- train(Diagnosis ~ PC1, data = bcPC1, method = "rf", 
+trControl = control, tuneLength = 5)
+rfPC1CV
+#Bootstrap
+set.seed(8)
+
+B <- 200
+acc_rf_pc1 <- numeric(B)
+
+for(b in 1:B){
+idx <- sample(1:nrow(bcPC1), replace = TRUE)
+boot_train <- bcPC1[idx, ]
+oob <- setdiff(1:nrow(bcPC1), idx)
+boot_test <- bcPC1[oob, ]
+
+rf_temp <- randomForest(Diagnosis ~ PC1, data = boot_train, ntree = 500)
+
+pred <- predict(rf_temp, boot_test)
+acc_rf_pc1[b] <- mean(pred == boot_test$Diagnosis)
+}
+
+summary(acc_rf_pc1)
+
+```
+GBM Cross-Validation (Original) & Bootstrap
+```{r}
+library(caret)
+library(gbm)
+set.seed(8)
+
+bcGBM <- bc
+bcGBM$Diagnosis <- factor(bcGBM$Diagnosis)
+
+control <- trainControl(method = "cv", number = 10)
+
+gbmOrigCV <- train(Diagnosis ~ ., data = bcGBM, method = "gbm", 
+trControl = control, verbose = FALSE, tuneLength = 5)
+gbmOrigCV
+
+#Bootstrap
+set.seed(8)
+
+bcGBM$Diagnosis <- ifelse(bcGBM$Diagnosis == "M", 1, 0)
+
+B <- 200
+accGBMorig <- numeric(B)
+
+for(b in 1:B){
+
+idx <- sample(1:nrow(bcGBM), replace = TRUE)
+bootTrain <- bcGBM[idx, ]
+oob <- setdiff(1:nrow(bcGBM), idx)
+bootTest <- bcGBM[oob, ]
+
+bootTrain$Diagnosis <- as.numeric(bootTrain$Diagnosis)
+bootTest$Diagnosis <- as.numeric(bootTest$Diagnosis)
+
+gbmTemp <- gbm(
+Diagnosis ~ .,
+data = bootTrain,
+distribution = "bernoulli",
+n.trees = 2000,
+interaction.depth = 3,
+shrinkage = 0.05,
+bag.fraction = 0.7,
+verbose = FALSE
+)
+
+bestIter <- suppressWarnings(suppressMessages( gbm.perf(gbmTemp, method = "OOB",
+plot.it = FALSE)))
+
+prob <- predict(gbmTemp, newdata = bootTest, n.trees = bestIter,
+type = "response")
+
+pred <- ifelse(prob > 0.5, 1, 0)
+
+accGBMorig[b] <- mean(pred == bootTest$Diagnosis)}
+
+summary(accGBMorig)
+
+```
+GBM Cross-Validation PC1 and Bootstrap
+```{r}
+library(caret)
+library(gbm)
+set.seed(8)
+
+pcaObj <- prcomp(bc[ , -1], scale. = TRUE)
+PC1 <- pcaObj$x[,1]
+
+bcPC1 <- data.frame(Diagnosis = factor(bc$Diagnosis), PC1 = PC1)
+
+control <- trainControl(method = "cv", number = 10)
+
+gbmPC1CV <- train(Diagnosis ~ PC1, data = bcPC1, method = "gbm", 
+trControl = control, verbose = FALSE, tuneLength = 5)
+gbmPC1CV
+#Bootstrap
+set.seed(8)
+
+bcPC1$Diagnosis <- ifelse(bcPC1$Diagnosis == "M" | bcPC1$Diagnosis == 1, 1, 0)
+
+B <- 200
+accGBMpc1 <- numeric(B)
+
+for(b in 1:B){
+
+idx <- sample(1:nrow(bcPC1), replace = TRUE)
+bootTrain <- bcPC1[idx, ]
+oob <- setdiff(1:nrow(bcPC1), idx)
+bootTest <- bcPC1[oob, ]
+
+bootTrain$Diagnosis <- as.numeric(bootTrain$Diagnosis)
+bootTest$Diagnosis <- as.numeric(bootTest$Diagnosis)
+
+gbmTemp <- gbm(
+Diagnosis ~ PC1,
+data = bootTrain,
+distribution = "bernoulli",
+n.trees = 2000,
+interaction.depth = 3,
+shrinkage = 0.05,
+bag.fraction = 0.7,
+verbose = FALSE
+)
+
+bestIter <- suppressWarnings(suppressMessages(gbm.perf(gbmTemp, method = "OOB",
+plot.it = FALSE)))
+
+prob <- predict(gbmTemp, newdata = bootTest, n.trees = bestIter,
+type = "response")
+
+pred <- ifelse(prob > 0.5, 1, 0)
+
+accGBMpc1[b] <- mean(pred == bootTest$Diagnosis)}
+
+summary(accGBMpc1)
+```
