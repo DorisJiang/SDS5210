@@ -15,8 +15,6 @@ bc <- bc[,-1]
 ```
 RF with PC1
 ```{r}
-library(randomForest)
-
 set.seed(8)
 
 bc1 <- bc
@@ -49,7 +47,6 @@ accuracy
 ```
 RF with Original
 ```{r}
-set.seed(8)
 bc2 <- bc
 bc2$Diagnosis <- factor(bc2$Diagnosis)
 
@@ -74,10 +71,6 @@ accuracy
 ```
 GBM with Original
 ```{r}
-library(gbm)
-
-set.seed(8)
-
 bc3 <- bc
 bc3$Diagnosis <- ifelse(bc3$Diagnosis == "M", 1, 0)
 
@@ -115,10 +108,6 @@ accuracy_gbm
 ```
 GBM with pc1
 ```{r}
-library(gbm)
-
-set.seed(8)
-
 bc1 <- bc
 bc1$Diagnosis <- ifelse(bc1$Diagnosis == "M", 1, 0)
 
@@ -167,10 +156,6 @@ accuracy_gbm_pc1
 ```
 Random Forest (Original) CV and Bootstrap
 ```{r}
-library(randomForest)
-
-set.seed(8)
-
 bcRF <- bc
 bcRF$Diagnosis <- factor(bcRF$Diagnosis)
 
@@ -199,8 +184,9 @@ cv_acc[k] <- mean(pred_k == test_k$Diagnosis)
 
 mean_cv_accuracy <- mean(cv_acc)
 mean_cv_accuracy
+
 #Bootstrap
-set.seed(8)
+
 B <- 200
 acc_rf_orig <- numeric(B)
 
@@ -221,10 +207,6 @@ summary(acc_rf_orig)
 ```
 Random Forest PC1 CV & Bootstrap
 ```{r}
-library(randomForest)
-
-set.seed(8)
-
 bc2 <- bc
 bc2$Diagnosis <- factor(bc2$Diagnosis)
 
@@ -265,7 +247,6 @@ mean_cv_accuracy <- mean(cv_acc)
 mean_cv_accuracy
 
 #Bootstrap
-set.seed(8)
 
 B <- 200
 acc_rf_pc1 <- numeric(B)
@@ -304,9 +285,7 @@ summary(acc_rf_pc1)
 ```
 GBM Cross-Validation (Original) & Bootstrap
 ```{r}
-library(gbm)
 
-set.seed(8)
 
 bcGBM <- bc
 bcGBM$Diagnosis <- ifelse(bcGBM$Diagnosis == "M", 1, 0)
@@ -349,9 +328,7 @@ cv_acc[k] <- mean(pred_k == truth_k)
 mean_cv_accuracy <- mean(cv_acc)
 mean_cv_accuracy
 
-
 #Bootstrap
-set.seed(8)
 
 bcGBM$Diagnosis <- ifelse(bcGBM$Diagnosis == "M", 1, 0)
 
@@ -394,9 +371,6 @@ summary(accGBMorig)
 ```
 GBM Cross-Validation PC1 and Bootstrap
 ```{r}
-library(gbm)
-
-set.seed(8)
 
 bc2 <- bc
 bc2$Diagnosis <- ifelse(bc2$Diagnosis == "M", 1, 0)
@@ -445,7 +419,6 @@ mean_cv_accuracy <- mean(cv_acc)
 mean_cv_accuracy
 
 #Bootstrap
-set.seed(8)
 
 bc2 <- bc
 bc2$Diagnosis <- ifelse(bc2$Diagnosis == "M", 1, 0)
