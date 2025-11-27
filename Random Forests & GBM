@@ -15,6 +15,8 @@ bc <- bc[,-1]
 ```
 RF with PC1
 ```{r}
+library(randomForest)
+
 set.seed(8)
 
 bc1 <- bc
@@ -22,17 +24,17 @@ bc1$Diagnosis <- factor(bc1$Diagnosis)
 
 n <- nrow(bc1)
 idx <- sample(seq_len(n), size = floor(0.7 * n))
-train_raw <- bc1[idx, ]
-test_raw  <- bc1[-idx, ]
+trainraw <- bc1[idx, ]
+testraw  <- bc1[-idx, ]
 
-pca_obj <- prcomp(train_raw[, -1], scale = TRUE)
-train_pc1 <- pca_obj$x[, 1]
+pcaobj <- prcomp(trainraw[, -1], scale = TRUE)
+trainpc1 <- pcaobj$x[, 1]
 
-test_scaled <- scale(test_raw[, -1], center = pca_obj$center, scale  = 
-pca_obj$scale)
-test_pc1 <- test_scaled %*% pca_obj$rotation[, 1]
-train1 <- data.frame(Diagnosis = train_raw$Diagnosis, PC1 = train_pc1)
-test1  <- data.frame(Diagnosis = test_raw$Diagnosis,  PC1 = test_pc1)
+testscaled <- scale(testraw[, -1], center = pcaobj$center, scale  = 
+pcaobj$scale)
+testpc1 <- testscaled %*% pcaobj$rotation[, 1]
+train1 <- data.frame(Diagnosis = trainraw$Diagnosis, PC1 = trainpc1)
+test1  <- data.frame(Diagnosis = testraw$Diagnosis,  PC1 = testpc1)
 
 rfpc1 <- randomForest(
   Diagnosis ~ PC1,
@@ -98,13 +100,13 @@ gbm3 <- gbm(
 best3 <- gbm.perf(gbm3, method = "OOB")
 
 prob3 <- predict(gbm3, newdata = test3, n.trees = best3, type = "response")
-gbm_rmse <- RMSE(test3$Diagnosis, prob3)
+gbmrmse <- RMSE(test3$Diagnosis, prob3)
 
-pred_class <- ifelse(prob3 > 0.5, 1, 0)
-accuracy_gbm <- mean(pred_class == test3$Diagnosis)
+predclass <- ifelse(prob3 > 0.5, 1, 0)
+accuracygbm <- mean(predclass == test3$Diagnosis)
 
-gbm_rmse
-accuracy_gbm
+gbmrmse
+accuracygbm
 ```
 GBM with pc1
 ```{r}
@@ -113,25 +115,24 @@ bc1$Diagnosis <- ifelse(bc1$Diagnosis == "M", 1, 0)
 
 n <- nrow(bc1)
 idx <- sample(seq_len(n), size = floor(0.7 * n))
-train_raw <- bc1[idx, ]
-test_raw  <- bc1[-idx, ]
+trainraw <- bc1[idx, ]
+testraw  <- bc1[-idx, ]
 
-pca_obj <- prcomp(train_raw[, -1], scale = TRUE)
-train_pc1 <- pca_obj$x[, 1]
+pcaobj <- prcomp(trainraw[, -1], scale = TRUE)
+trainpc1 <- pcaobj$x[, 1]
 
-test_scaled <- scale(test_raw[, -1],
-                     center = pca_obj$center,
-                     scale  = pca_obj$scale)
-test_pc1 <- test_scaled %*% pca_obj$rotation[, 1]
+testscaled <- scale(testraw[, -1], center = pcaobj$center, scale  = pcaobj$scale)
 
-train_pc <- data.frame(Diagnosis = train_raw$Diagnosis, PC1 = train_pc1)
-test_pc  <- data.frame(Diagnosis = test_raw$Diagnosis,  PC1 = test_pc1)
+testpc1 <- testscaled %*% pcaobj$rotation[, 1]
+
+trainpc <- data.frame(Diagnosis = trainraw$Diagnosis, PC1 = trainpc1)
+testpc  <- data.frame(Diagnosis = testraw$Diagnosis,  PC1 = testpc1)
 
 RMSE <- function(truth, pred) sqrt(mean((truth - pred)^2))
 
-gbm_pc1 <- gbm(
+gbmpc1 <- gbm(
   Diagnosis ~ PC1,
-  data               = train_pc,
+  data               = trainpc,
   distribution       = "bernoulli",
   n.trees            = 5000,
   interaction.depth  = 3,
@@ -143,16 +144,16 @@ gbm_pc1 <- gbm(
   verbose            = FALSE
 )
 
-best_pc1 <- gbm.perf(gbm_pc1, method = "OOB")
+bestpc1 <- gbm.perf(gbmpc1, method = "OOB")
 
-prob_pc1 <- predict(gbm_pc1, newdata = test_pc, n.trees = best_pc1, type = "response")
-gbm_pc1_rmse <- RMSE(test_pc$Diagnosis, prob_pc1)
+probpc1 <- predict(gbmpc1, newdata = testpc, n.trees = bestpc1, type = "response")
+gbmpc1rmse <- RMSE(testpc$Diagnosis, probpc1)
 
-pred_class_pc1 <- ifelse(prob_pc1 > 0.5, 1, 0)
-accuracy_gbm_pc1 <- mean(pred_class_pc1 == test_pc$Diagnosis)
+predclasspc1 <- ifelse(probpc1 > 0.5, 1, 0)
+accuracygbmpc1 <- mean(predclasspc1 == testpc$Diagnosis)
 
-gbm_pc1_rmse
-accuracy_gbm_pc1
+gbmpc1rmse
+accuracygbmpc1
 ```
 Random Forest (Original) CV and Bootstrap
 ```{r}
@@ -161,48 +162,47 @@ bcRF$Diagnosis <- factor(bcRF$Diagnosis)
 
 K <- 10
 n <- nrow(bcRF)
-fold_id <- sample(rep(1:K, length.out = n))
+foldid <- sample(rep(1:K, length.out = n))
 
-cv_acc <- numeric(K)
+cvacc <- numeric(K)
 
 for (k in 1:K) {
-train_idx <- which(fold_id != k)
-test_idx  <- which(fold_id == k)
-train_k <- bcRF[train_idx, ]
-test_k  <- bcRF[test_idx, ]
-p <- ncol(train_k) - 1
-  rf_k <- randomForest(
+trainidx <- which(foldid != k)
+testidx  <- which(foldid == k)
+traink <- bcRF[trainidx, ]
+testk  <- bcRF[testidx, ]
+p <- ncol(traink) - 1
+  rfk <- randomForest(
     Diagnosis ~ .,
-    data = train_k,
+    data = traink,
     ntree = 500,
     mtry = floor(sqrt(p)),
     importance = FALSE
   )
-pred_k <- predict(rf_k, newdata = test_k)
-cv_acc[k] <- mean(pred_k == test_k$Diagnosis)
+predk <- predict(rfk, newdata = testk)
+cvacc[k] <- mean(predk == testk$Diagnosis)
 }
 
-mean_cv_accuracy <- mean(cv_acc)
-mean_cv_accuracy
-
+meancvaccuracy <- mean(cvacc)
+meancvaccuracy
 #Bootstrap
-
+set.seed(8)
 B <- 200
-acc_rf_orig <- numeric(B)
+accrforig <- numeric(B)
 
 for(b in 1:B){
 idx <- sample(1:nrow(bcRF), replace = TRUE)
-boot_train <- bcRF[idx, ]
+boottrain <- bcRF[idx, ]
 oob <- setdiff(1:nrow(bcRF), idx)
-boot_test <- bcRF[oob, ]
+boottest <- bcRF[oob, ]
 
-rf_temp <- randomForest(Diagnosis ~ ., data = boot_train, ntree = 500)
+rftemp <- randomForest(Diagnosis ~ ., data = boottrain, ntree = 500)
 
-pred <- predict(rf_temp, boot_test)
-acc_rf_orig[b] <- mean(pred == boot_test$Diagnosis)
+pred <- predict(rftemp, boottest)
+accrforig[b] <- mean(pred == boottest$Diagnosis)
 }
 
-summary(acc_rf_orig)
+summary(accrforig)
 
 ```
 Random Forest PC1 CV & Bootstrap
@@ -210,46 +210,45 @@ Random Forest PC1 CV & Bootstrap
 bc2 <- bc
 bc2$Diagnosis <- factor(bc2$Diagnosis)
 
-K <- 10
 n <- nrow(bc2)
-fold_id <- sample(rep(1:K, length.out = n))
+foldid <- sample(rep(1:K, length.out = n))
 
-cv_acc <- numeric(K)
+cvacc <- numeric(K)
 
 for (k in 1:K) {
-train_idx <- which(fold_id != k)
-test_idx  <- which(fold_id == k)
+trainidx <- which(foldid != k)
+testidx  <- which(foldid == k)
   
-train_raw <- bc2[train_idx, ]
-test_raw  <- bc2[test_idx, ]
+trainraw <- bc2[trainidx, ]
+testraw  <- bc2[testidx, ]
   
-pca_obj <- prcomp(train_raw[, -1], scale = TRUE)
-train_pc1 <- pca_obj$x[, 1]
+pcaobj <- prcomp(trainraw[, -1], scale = TRUE)
+trainpc1 <- pcaobj$x[, 1]
   
-test_scaled <- scale(test_raw[, -1], center = pca_obj$center,
-scale  = pca_obj$scale)
-test_pc1 <- test_scaled %*% pca_obj$rotation[, 1]
+testscaled <- scale(testraw[, -1], center = pcaobj$center,
+scale  = pcaobj$scale)
+testpc1 <- testscaled %*% pcaobj$rotation[, 1]
   
-train_k <- data.frame(Diagnosis = train_raw$Diagnosis, PC1 = train_pc1)
-test_k  <- data.frame(Diagnosis = test_raw$Diagnosis,  PC1 = test_pc1)
+traink <- data.frame(Diagnosis = trainraw$Diagnosis, PC1 = trainpc1)
+testk  <- data.frame(Diagnosis = testraw$Diagnosis,  PC1 = testpc1)
   
-rf_k <- randomForest(
+rfk <- randomForest(
     Diagnosis ~ PC1,
-    data = train_k,
+    data = traink,
     ntree = 500,
     mtry = 1
   )
-pred_k <- predict(rf_k, newdata = test_k)
-cv_acc[k] <- mean(pred_k == test_k$Diagnosis)
+predk <- predict(rfk, newdata = testk)
+cvacc[k] <- mean(predk == testk$Diagnosis)
 }
 
-mean_cv_accuracy <- mean(cv_acc)
-mean_cv_accuracy
+meancvaccuracy <- mean(cvacc)
+meancvaccuracy
 
 #Bootstrap
 
 B <- 200
-acc_rf_pc1 <- numeric(B)
+accrfpc1 <- numeric(B)
 
 bc2 <- bc
 bc2$Diagnosis <- factor(bc2$Diagnosis)
@@ -257,168 +256,165 @@ bc2$Diagnosis <- factor(bc2$Diagnosis)
 for(b in 1:B){
 
 idx <- sample(1:nrow(bc2), replace = TRUE)
-boot_train_raw <- bc2[idx, ]
-oob_idx <- setdiff(1:nrow(bc2), idx)
-boot_test_raw <- bc2[oob_idx, ]
+boottrainraw <- bc2[idx, ]
+oobidx <- setdiff(1:nrow(bc2), idx)
+boottestraw <- bc2[oobidx, ]
 
- 
-pca_obj <- prcomp(boot_train_raw[, -1], scale = TRUE)
-train_pc1 <- pca_obj$x[, 1]
+pcaobj <- prcomp(boottrainraw[, -1], scale = TRUE)
+trainpc1 <- pcaobj$x[, 1]
 
-test_scaled <- scale(boot_test_raw[, -1], center = pca_obj$center,
-scale  = pca_obj$scale)
-test_pc1 <- test_scaled %*% pca_obj$rotation[, 1]
+testscaled <- scale(boottestraw[, -1], center = pcaobj$center,
+scale  = pcaobj$scale)
+testpc1 <- testscaled %*% pcaobj$rotation[, 1]
 
-boot_train <- data.frame(Diagnosis = boot_train_raw$Diagnosis,
-                           PC1 = train_pc1)
-boot_test  <- data.frame(Diagnosis = boot_test_raw$Diagnosis,
-                           PC1 = test_pc1)
+boottrain <- data.frame(Diagnosis = boottrainraw$Diagnosis,PC1 = trainpc1)
 
-rf_temp <- randomForest(Diagnosis ~ PC1, data = boot_train, ntree = 500,
+boottest  <- data.frame(Diagnosis = boottestraw$Diagnosis,PC1 = testpc1)
+
+rftemp <- randomForest(Diagnosis ~ PC1, data = boottrain, ntree = 500,
 mtry = 1)
 
-pred <- predict(rf_temp, boot_test)
-acc_rf_pc1[b] <- mean(pred == boot_test$Diagnosis)
+pred <- predict(rftemp, boottest)
+accrfpc1[b] <- mean(pred == boottest$Diagnosis)
 }
 
-summary(acc_rf_pc1)
+summary(accrfpc1)
 ```
 GBM Cross-Validation (Original) & Bootstrap
 ```{r}
-
-
 bcGBM <- bc
 bcGBM$Diagnosis <- ifelse(bcGBM$Diagnosis == "M", 1, 0)
 
-K <- 10
 n <- nrow(bcGBM)
-fold_id <- sample(rep(1:K, length.out = n))
+foldid <- sample(rep(1:K, length.out = n))
 
-cv_acc <- numeric(K)
+cvacc <- numeric(K)
 
 for (k in 1:K) {
-train_idx <- which(fold_id != k)
-test_idx  <- which(fold_id == k)
-  
-train_k <- bcGBM[train_idx, ]
-test_k  <- bcGBM[test_idx, ]
-  
-  gbm_k <- gbm(
-    Diagnosis ~ .,
-    data               = train_k,
-    distribution       = "bernoulli",
-    n.trees            = 2000,
-    interaction.depth  = 3,
-    shrinkage          = 0.05,
-    n.minobsinnode     = 10,
-    bag.fraction       = 0.7,
-    cv.folds           = 0,
-    keep.data          = TRUE,
-    verbose            = FALSE
-  )
-best_k <- gbm.perf(gbm_k, method = "OOB", plot.it = FALSE)
-  
-prob_k <- predict(gbm_k, newdata = test_k, n.trees = best_k, type = "response")
-pred_k <- ifelse(prob_k > 0.5, 1, 0)
-  
-truth_k <- test_k$Diagnosis
-cv_acc[k] <- mean(pred_k == truth_k)
+
+trainidx <- which(foldid != k)
+testidx  <- which(foldid == k)
+
+traink <- bcGBM[trainidx, ]
+testk  <- bcGBM[testidx, ]
+
+gbmk <- gbm(
+  Diagnosis ~ .,
+  data = traink,
+  distribution = "bernoulli",
+  n.trees = 2000,
+  interaction.depth = 3,
+  shrinkage = 0.05,
+  n.minobsinnode = 10,
+  bag.fraction = 0.7,
+  cv.folds = 0,
+  keep.data = TRUE,
+  verbose = FALSE
+)
+
+bestk <- gbm.perf(gbmk, method = "OOB", plot.it = FALSE)
+
+probk <- predict(gbmk, newdata = testk, n.trees = bestk, type = "response")
+predk <- ifelse(probk > 0.5, 1, 0)
+
+cvacc[k] <- mean(predk == testk$Diagnosis)
 }
 
-mean_cv_accuracy <- mean(cv_acc)
-mean_cv_accuracy
-
+meancvacc <- mean(cvacc)
+meancvacc
 #Bootstrap
-
+bcGBM <- bc
 bcGBM$Diagnosis <- ifelse(bcGBM$Diagnosis == "M", 1, 0)
 
 B <- 200
 accGBMorig <- numeric(B)
 
-for(b in 1:B){
+for (b in 1:B) {
 
 idx <- sample(1:nrow(bcGBM), replace = TRUE)
-bootTrain <- bcGBM[idx, ]
-oob <- setdiff(1:nrow(bcGBM), idx)
-bootTest <- bcGBM[oob, ]
+oobidx <- setdiff(1:nrow(bcGBM), idx)
 
-bootTrain$Diagnosis <- as.numeric(bootTrain$Diagnosis)
-bootTest$Diagnosis <- as.numeric(bootTest$Diagnosis)
+boottrain <- bcGBM[idx, ]
+boottest  <- bcGBM[oobidx, ]
 
-gbmTemp <- gbm(
-Diagnosis ~ .,
-data = bootTrain,
-distribution = "bernoulli",
-n.trees = 2000,
-interaction.depth = 3,
-shrinkage = 0.05,
-bag.fraction = 0.7,
-verbose = FALSE
+gbmtemp <- gbm(
+  Diagnosis ~ .,
+  data = boottrain,
+  distribution = "bernoulli",
+  n.trees = 2000,
+  interaction.depth = 3,
+  shrinkage = 0.05,
+  bag.fraction = 0.7,
+  verbose = FALSE
 )
 
-bestIter <- suppressWarnings(suppressMessages( gbm.perf(gbmTemp, method = "OOB",
-plot.it = FALSE)))
+bestiter <- suppressWarnings(suppressMessages(
+gbm.perf(gbmtemp, method = "OOB", plot.it = FALSE)))
 
-prob <- predict(gbmTemp, newdata = bootTest, n.trees = bestIter,
-type = "response")
+prob <- predict(gbmtemp,newdata = boottest,n.trees = bestiter,type = "response")
 
 pred <- ifelse(prob > 0.5, 1, 0)
 
-accGBMorig[b] <- mean(pred == bootTest$Diagnosis)}
+accGBMorig[b] <- mean(pred == boottest$Diagnosis)
+}
 
 summary(accGBMorig)
 
 ```
 GBM Cross-Validation PC1 and Bootstrap
 ```{r}
-
 bc2 <- bc
 bc2$Diagnosis <- ifelse(bc2$Diagnosis == "M", 1, 0)
 
-K <- 10
 n <- nrow(bc2)
-fold_id <- sample(rep(1:K, length.out = n))
+foldid <- sample(rep(1:K, length.out = n))
 
-cv_acc <- numeric(K)
+cvacc <- numeric(K)
 
 for (k in 1:K) {
-train_idx <- which(fold_id != k)
-test_idx  <- which(fold_id == k)
+
+trainidx <- which(foldid != k)
+testidx  <- which(foldid == k)
   
-train_raw <- bc2[train_idx, ]
-test_raw  <- bc2[test_idx, ]
+trainraw <- bc2[trainidx, ]
+testraw  <- bc2[testidx, ]
   
-pca_obj <- prcomp(train_raw[, -1], scale = TRUE)
-train_pc1 <- pca_obj$x[, 1]
+pcaobj <- prcomp(trainraw[, -1], scale = TRUE)
+trainpc1 <- pcaobj$x[, 1]
   
-test_scaled <- scale(test_raw[, -1], center = pca_obj$center, 
-scale  = pca_obj$scale)
-test_pc1 <- test_scaled %*% pca_obj$rotation[, 1]
-train_k <- data.frame(Diagnosis = train_raw$Diagnosis, PC1 = train_pc1)
-test_k  <- data.frame(Diagnosis = test_raw$Diagnosis,  PC1 = test_pc1)
-  gbm_k <- gbm(
-    Diagnosis ~ PC1,
-    data               = train_k,
-    distribution       = "bernoulli",
-    n.trees            = 2000,
-    interaction.depth  = 3,
-    shrinkage          = 0.05,
-    n.minobsinnode     = 10,
-    bag.fraction       = 0.7,
-    cv.folds           = 0,
-    keep.data          = TRUE,
-    verbose            = FALSE
+testscaled <- scale(testraw[, -1],center = pcaobj$center,scale  = pcaobj$scale)
+
+testpc1 <- testscaled %*% pcaobj$rotation[, 1]
+
+traink <- data.frame(Diagnosis = trainraw$Diagnosis, PC1 = trainpc1)
+testk  <- data.frame(Diagnosis = testraw$Diagnosis,  PC1 = testpc1)
+
+gbmk <- gbm(
+  Diagnosis ~ PC1,
+  data = traink,
+  distribution = "bernoulli",
+  n.trees = 2000,
+  interaction.depth = 3,
+  shrinkage = 0.05,
+  n.minobsinnode = 10,
+  bag.fraction = 0.7,
+  cv.folds = 0,
+  keep.data = TRUE,
+  verbose = FALSE
   )
-best_k <- gbm.perf(gbm_k, method = "OOB", plot.it = FALSE)
-prob_k <- predict(gbm_k, newdata = test_k, n.trees = best_k, type = "response")
-pred_k <- ifelse(prob_k > 0.5, 1, 0)
-cv_acc[k] <- mean(pred_k == test_k$Diagnosis)
+
+bestk <- gbm.perf(gbmk, method = "OOB", plot.it = FALSE)
+
+probk <- predict(gbmk, newdata = testk, n.trees = bestk, type = "response")
+predk <- ifelse(probk > 0.5, 1, 0)
+
+cvacc[k] <- mean(predk == testk$Diagnosis)
 }
 
-mean_cv_accuracy <- mean(cv_acc)
-mean_cv_accuracy
-
+meancvacc <- mean(cvacc)
+meancvacc
 #Bootstrap
+
 
 bc2 <- bc
 bc2$Diagnosis <- ifelse(bc2$Diagnosis == "M", 1, 0)
@@ -427,37 +423,45 @@ B <- 200
 accGBMpc1 <- numeric(B)
 
 for (b in 1:B) {
+
 idx <- sample(1:nrow(bc2), replace = TRUE)
-boot_train_raw <- bc2[idx, ]
-oob_idx <- setdiff(1:nrow(bc2), idx)
-boot_test_raw <- bc2[oob_idx, ]
-pca_obj <- prcomp(boot_train_raw[, -1], scale = TRUE)
-train_pc1 <- pca_obj$x[, 1]
-  
-test_scaled <- scale(boot_test_raw[, -1], center = pca_obj$center,
-scale  = pca_obj$scale)
-test_pc1 <- test_scaled %*% pca_obj$rotation[, 1]
-  
-boot_train <- data.frame(Diagnosis = boot_train_raw$Diagnosis,PC1 = train_pc1)
-boot_test  <- data.frame(Diagnosis = boot_test_raw$Diagnosis, PC1 = test_pc1)
-  
-gbmTemp <- gbm(
-    Diagnosis ~ PC1,
-    data = boot_train,
-    distribution = "bernoulli",
-    n.trees = 2000,
-    interaction.depth = 3,
-    shrinkage = 0.05,
-    bag.fraction = 0.7,
-    verbose = FALSE)
-bestIter <- suppressWarnings(suppressMessages(gbm.perf(gbmTemp, 
-method = "OOB", plot.it = FALSE)))
-prob <- predict(gbmTemp, newdata = boot_test, 
-n.trees = bestIter, type = "response")
+boottrainraw <- bc2[idx, ]
+oobidx <- setdiff(1:nrow(bc2), idx)
+boottestraw <- bc2[oobidx, ]
+
+pcaobj <- prcomp(boottrainraw[, -1], scale = TRUE)
+trainpc1 <- pcaobj$x[, 1]
+
+testscaled <- scale(boottestraw[, -1], center = pcaobj$center, 
+scale  = pcaobj$scale)
+
+testpc1 <- testscaled %*% pcaobj$rotation[, 1]
+
+boottrain <- data.frame(Diagnosis = boottrainraw$Diagnosis, PC1 = trainpc1)
+boottest  <- data.frame(Diagnosis = boottestraw$Diagnosis, PC1 = testpc1)
+
+gbmtemp <- gbm(
+  Diagnosis ~ PC1,
+  data = boottrain,
+  distribution = "bernoulli",
+  n.trees = 2000,
+  interaction.depth = 3,
+  shrinkage = 0.05,
+  bag.fraction = 0.7,
+  verbose = FALSE
+)
+
+bestiter <- suppressWarnings(suppressMessages(
+  gbm.perf(gbmtemp, method = "OOB", plot.it = FALSE)))
+
+prob <- predict(gbmtemp, newdata = boottest,
+                  n.trees = bestiter, type = "response")
+
 pred <- ifelse(prob > 0.5, 1, 0)
-  
-accGBMpc1[b] <- mean(pred == boot_test$Diagnosis)
+
+accGBMpc1[b] <- mean(pred == boottest$Diagnosis)
 }
 
 summary(accGBMpc1)
+
 ```
