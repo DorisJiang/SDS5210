@@ -1,0 +1,782 @@
+---
+title: "SDS5210 Final Project: Breast Cancer Classification"
+author: "Yunhan Jiang, Joshua Romero, Minjie Yang"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(readr)
+library(dbarts)
+library(gbm)
+library(randomForest)
+library(pROC)
+
+# Helper metrics
+RMSE <- function(truth, pred) sqrt(mean((truth - pred)^2))
+acc  <- function(truth, class_hat) mean(truth == class_hat)
+auc_score <- function(truth, prob_hat, levels = c(0, 1)) {
+  roc_obj <- pROC::roc(response = factor(truth, levels = levels), 
+                       predictor = as.numeric(prob_hat), quiet = TRUE)
+  as.numeric(pROC::auc(roc_obj))
+}
+
+# Global settings
+K <- 5         # Number of CV folds
+num_top <- 5   # Number of top configurations to display
+```
+
+# Load Data
+
+```{r load-data}
+coln <- c("ID", "Diagnosis", paste0(rep(c("radius", "texture", "perimeter", "area",
+  "smoothness", "compactness", "concavity", "concavepoints", "symmetry",
+  "fractaldimension"), each = 3), rep(c("mean", "se", "worst"), times = 10)))
+
+local_file <- "bc.csv"
+
+if (file.exists(local_file)) {
+  message("Loading from local file...")
+  bc <- read_csv(local_file, show_col_types = FALSE)
+  cat("Local data loaded:", nrow(bc), "rows,", ncol(bc), "columns\n")
+} else {
+  message("Local file not found. Downloading from URL...")
+  url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/breast-cancer-wisconsin/wdbc.data"
+  bc <- read_csv(url, col_names = coln, show_col_types = FALSE)
+  bc <- bc[, -1]
+  cat("Online data loaded:", nrow(bc), "rows,", ncol(bc), "columns\n")
+  write_csv(bc, local_file)
+  message("Data saved locally for future use.")
+}
+```
+
+# Train/Test Split and CV Folds
+
+We create a single train/test split and **shared CV folds** that will be used across all models for fair comparison.
+
+```{r train-test-split}
+set.seed(8)
+n <- nrow(bc)
+idx_train <- sample(seq_len(n), size = floor(0.7 * n))
+idx_test  <- setdiff(seq_len(n), idx_train)
+
+bc_train <- bc[idx_train, ]
+bc_test  <- bc[idx_test, ]
+
+# Create shared CV folds for fair comparison across all models
+fold_id <- sample(rep(1:K, length.out = nrow(bc_train)))
+
+cat("Training set:", nrow(bc_train), "rows\n")
+cat("Test set:", nrow(bc_test), "rows\n")
+cat("CV folds:", K, "folds with sizes:", table(fold_id), "\n")
+```
+
+# Random Forest
+
+## Trained on Original Data (CV Tuned)
+
+```{r rf-orig-cv}
+# Prepare data
+bc_rf_orig_train <- bc_train
+bc_rf_orig_train$Diagnosis <- factor(bc_rf_orig_train$Diagnosis)
+bc_rf_orig_test <- bc_test
+bc_rf_orig_test$Diagnosis <- factor(bc_rf_orig_test$Diagnosis)
+
+p <- ncol(bc_rf_orig_train) - 1
+
+# Parameter grid (to record and show results for different parameter settings)
+rf_orig_grid <- expand.grid(
+  mtry = max(1, floor(sqrt(p)) - 5):min(p, floor(sqrt(p)) + 5),
+  nodesize = c(1, 2, 3, 5, 10, 20)
+)
+
+# Initialize CV results
+rf_orig_cv_results <- rf_orig_grid %>%
+  mutate(cv_acc_mean = NA_real_, cv_acc_sd = NA_real_,
+         cv_auc_mean = NA_real_, cv_auc_sd = NA_real_)
+
+# CV loop using shared fold_id
+set.seed(8) # reset random seed
+for (i in 1:nrow(rf_orig_grid)) {
+  cv_acc <- numeric(K)
+  cv_auc <- numeric(K)
+  
+  for (k in 1:K) {
+    train_k <- bc_rf_orig_train[fold_id != k, ]
+    valid_k <- bc_rf_orig_train[fold_id == k, ]
+    
+    rf_fit <- randomForest(
+      Diagnosis ~ .,
+      data = train_k,
+      ntree = 500,
+      mtry = rf_orig_grid$mtry[i],
+      nodesize = rf_orig_grid$nodesize[i]
+    )
+    
+    pred_class <- predict(rf_fit, newdata = valid_k, type = "response")
+    pred_prob <- predict(rf_fit, newdata = valid_k, type = "prob")[, "M"]
+    
+    cv_acc[k] <- acc(valid_k$Diagnosis, pred_class)
+    cv_auc[k] <- auc_score(valid_k$Diagnosis, pred_prob, levels = c("B", "M"))
+  }
+  
+  rf_orig_cv_results$cv_acc_mean[i] <- mean(cv_acc)
+  rf_orig_cv_results$cv_acc_sd[i] <- sd(cv_acc)
+  rf_orig_cv_results$cv_auc_mean[i] <- mean(cv_auc)
+  rf_orig_cv_results$cv_auc_sd[i] <- sd(cv_auc)
+}
+
+# Top configurations by CV AUC
+rf_orig_top <- rf_orig_cv_results %>%
+  arrange(desc(cv_auc_mean)) %>%
+  head(num_top) %>%
+  mutate(rank = 1:num_top)
+
+cat(sprintf("Top %d Configurations by CV AUC for RF (Original)\n", num_top))
+print(rf_orig_top)
+
+# Best configuration
+rf_orig_best_params <- rf_orig_cv_results %>% arrange(desc(cv_auc_mean)) %>% slice(1)
+
+# Retrain on full training set with best params
+set.seed(8) # reset random seed
+rf_orig_final <- randomForest(
+  Diagnosis ~ .,
+  data = bc_rf_orig_train,
+  ntree = 500,
+  mtry = rf_orig_best_params$mtry,
+  nodesize = rf_orig_best_params$nodesize
+)
+
+# Final evaluation on test set
+rf_orig_test_pred_class <- predict(rf_orig_final, newdata = bc_rf_orig_test, type = "response")
+rf_orig_test_pred_prob <- predict(rf_orig_final, newdata = bc_rf_orig_test, type = "prob")[, "M"]
+rf_orig_test_acc <- acc(bc_rf_orig_test$Diagnosis, rf_orig_test_pred_class)
+rf_orig_test_auc <- auc_score(bc_rf_orig_test$Diagnosis, rf_orig_test_pred_prob, levels = c("B", "M"))
+
+cat("\n=== Final Model (RF Original) ===\n")
+cat(sprintf("Best params: mtry = %d, nodesize = %d\n", 
+            rf_orig_best_params$mtry, rf_orig_best_params$nodesize))
+cat(sprintf("CV AUC: %.4f (±%.4f)\n", rf_orig_best_params$cv_auc_mean, rf_orig_best_params$cv_auc_sd))
+cat(sprintf("Test Accuracy: %.4f, Test AUC: %.4f\n", rf_orig_test_acc, rf_orig_test_auc))
+```
+
+## Trained on Principal Components (CV Tuned)
+
+```{r rf-pca-cv}
+# Prepare data (factor for RF)
+bc_rf_pca_train <- bc_train
+bc_rf_pca_train$Diagnosis <- factor(bc_rf_pca_train$Diagnosis)
+bc_rf_pca_test <- bc_test
+bc_rf_pca_test$Diagnosis <- factor(bc_rf_pca_test$Diagnosis)
+
+# Parameter grid
+rf_pca_grid <- expand.grid(
+  n_pcs = 5:15,
+  mtry = c(1, 2, 3, 4, 5, 6, 7, 8),
+  nodesize = c(1, 2, 3, 5, 10, 20)
+)
+# Remove invalid: mtry > n_pcs
+rf_pca_grid <- rf_pca_grid %>% filter(mtry <= n_pcs)
+
+# Initialize CV results
+rf_pca_cv_results <- rf_pca_grid %>%
+  mutate(cv_acc_mean = NA_real_, cv_acc_sd = NA_real_,
+         cv_auc_mean = NA_real_, cv_auc_sd = NA_real_)
+
+# CV loop using shared fold_id
+set.seed(8) # reset random seed
+for (i in 1:nrow(rf_pca_grid)) {
+  n_pcs_i <- rf_pca_grid$n_pcs[i]
+  cv_acc <- numeric(K)
+  cv_auc <- numeric(K)
+  
+  for (k in 1:K) {
+    train_k_raw <- bc_rf_pca_train[fold_id != k, ]
+    valid_k_raw <- bc_rf_pca_train[fold_id == k, ]
+    
+    # PCA on training fold only
+    pcaobj <- prcomp(train_k_raw[, -1], scale = TRUE)
+    train_pcs <- pcaobj$x[, 1:n_pcs_i, drop = FALSE]
+    valid_scaled <- scale(valid_k_raw[, -1], center = pcaobj$center, scale = pcaobj$scale)
+    valid_pcs <- valid_scaled %*% pcaobj$rotation[, 1:n_pcs_i, drop = FALSE]
+    
+    train_k <- data.frame(Diagnosis = train_k_raw$Diagnosis, train_pcs)
+    valid_k <- data.frame(Diagnosis = valid_k_raw$Diagnosis, valid_pcs)
+    
+    rf_fit <- randomForest(
+      Diagnosis ~ .,
+      data = train_k,
+      ntree = 500,
+      mtry = rf_pca_grid$mtry[i],
+      nodesize = rf_pca_grid$nodesize[i]
+    )
+    
+    pred_class <- predict(rf_fit, newdata = valid_k, type = "response")
+    pred_prob <- predict(rf_fit, newdata = valid_k, type = "prob")[, "M"]
+    
+    cv_acc[k] <- acc(valid_k$Diagnosis, pred_class)
+    cv_auc[k] <- auc_score(valid_k$Diagnosis, pred_prob, levels = c("B", "M"))
+  }
+  
+  rf_pca_cv_results$cv_acc_mean[i] <- mean(cv_acc)
+  rf_pca_cv_results$cv_acc_sd[i] <- sd(cv_acc)
+  rf_pca_cv_results$cv_auc_mean[i] <- mean(cv_auc)
+  rf_pca_cv_results$cv_auc_sd[i] <- sd(cv_auc)
+}
+
+# Top configurations
+rf_pca_top <- rf_pca_cv_results %>%
+  arrange(desc(cv_auc_mean)) %>%
+  head(num_top) %>%
+  mutate(rank = 1:num_top)
+
+cat(sprintf("Top %d Configurations by CV AUC for RF (PCA)\n", num_top))
+print(rf_pca_top)
+
+# Best configuration
+rf_pca_best_params <- rf_pca_cv_results %>% arrange(desc(cv_auc_mean)) %>% slice(1)
+
+# Retrain on full training set with best params
+set.seed(8) # reset random seed
+pcaobj_final <- prcomp(bc_rf_pca_train[, -1], scale = TRUE)
+train_pcs_final <- pcaobj_final$x[, 1:rf_pca_best_params$n_pcs, drop = FALSE]
+test_scaled_final <- scale(bc_rf_pca_test[, -1], center = pcaobj_final$center, scale = pcaobj_final$scale)
+test_pcs_final <- test_scaled_final %*% pcaobj_final$rotation[, 1:rf_pca_best_params$n_pcs, drop = FALSE]
+
+train_final <- data.frame(Diagnosis = bc_rf_pca_train$Diagnosis, train_pcs_final)
+test_final <- data.frame(Diagnosis = bc_rf_pca_test$Diagnosis, test_pcs_final)
+
+rf_pca_final <- randomForest(
+  Diagnosis ~ .,
+  data = train_final,
+  ntree = 500,
+  mtry = rf_pca_best_params$mtry,
+  nodesize = rf_pca_best_params$nodesize
+)
+
+# Final evaluation on test set
+rf_pca_test_pred_class <- predict(rf_pca_final, newdata = test_final, type = "response")
+rf_pca_test_pred_prob <- predict(rf_pca_final, newdata = test_final, type = "prob")[, "M"]
+rf_pca_test_acc <- acc(test_final$Diagnosis, rf_pca_test_pred_class)
+rf_pca_test_auc <- auc_score(test_final$Diagnosis, rf_pca_test_pred_prob, levels = c("B", "M"))
+
+cat("\n=== Final Model (RF PCA) ===\n")
+cat(sprintf("Best params: n_pcs = %d, mtry = %d, nodesize = %d\n", 
+            rf_pca_best_params$n_pcs, rf_pca_best_params$mtry, rf_pca_best_params$nodesize))
+cat(sprintf("CV AUC: %.4f (±%.4f)\n", rf_pca_best_params$cv_auc_mean, rf_pca_best_params$cv_auc_sd))
+cat(sprintf("Test Accuracy: %.4f, Test AUC: %.4f\n", rf_pca_test_acc, rf_pca_test_auc))
+```
+
+# GBM
+
+## Trained on Original Data (CV Tuned)
+
+```{r gbm-orig-cv}
+# Prepare data (0/1 for GBM)
+bc_gbm_orig_train <- bc_train
+bc_gbm_orig_train$Diagnosis <- ifelse(bc_gbm_orig_train$Diagnosis == "M", 1, 0)
+bc_gbm_orig_test <- bc_test
+bc_gbm_orig_test$Diagnosis <- ifelse(bc_gbm_orig_test$Diagnosis == "M", 1, 0)
+
+# Parameter grid (use early stopping, so no need to tune n.trees)
+gbm_orig_grid <- expand.grid(
+  interaction.depth = c(1, 2, 3, 4, 5),
+  shrinkage = c(0.01, 0.05, 0.1),
+  n.minobsinnode = c(5, 10, 20)
+)
+
+# Initialize CV results
+gbm_orig_cv_results <- gbm_orig_grid %>%
+  mutate(cv_acc_mean = NA_real_, cv_acc_sd = NA_real_,
+         cv_auc_mean = NA_real_, cv_auc_sd = NA_real_,
+         cv_bestiter_mean = NA_real_, cv_bestiter_sd = NA_real_)
+
+# CV loop using shared fold_id
+set.seed(8) # reset random seed
+for (i in 1:nrow(gbm_orig_grid)) {
+  cv_acc <- numeric(K)
+  cv_auc <- numeric(K)
+  cv_bestiter <- numeric(K)
+  
+  for (k in 1:K) {
+    train_k <- bc_gbm_orig_train[fold_id != k, ]
+    valid_k <- bc_gbm_orig_train[fold_id == k, ]
+    
+    gbm_fit <- gbm(
+      Diagnosis ~ .,
+      data = train_k,
+      distribution = "bernoulli",
+      n.trees = 3000,
+      interaction.depth = gbm_orig_grid$interaction.depth[i],
+      shrinkage = gbm_orig_grid$shrinkage[i],
+      n.minobsinnode = gbm_orig_grid$n.minobsinnode[i],
+      bag.fraction = 0.7,
+      verbose = FALSE
+    )
+    
+    bestiter <- suppressWarnings(suppressMessages(gbm.perf(gbm_fit, method = "OOB", plot.it = FALSE)))
+    pred_prob <- predict(gbm_fit, newdata = valid_k, 
+                         n.trees = bestiter, type = "response")
+    pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+    
+    cv_acc[k] <- acc(valid_k$Diagnosis, pred_class)
+    cv_auc[k] <- auc_score(valid_k$Diagnosis, pred_prob, levels = c(0, 1))
+    cv_bestiter[k] <- bestiter
+  }
+  
+  gbm_orig_cv_results$cv_acc_mean[i] <- mean(cv_acc)
+  gbm_orig_cv_results$cv_acc_sd[i] <- sd(cv_acc)
+  gbm_orig_cv_results$cv_auc_mean[i] <- mean(cv_auc)
+  gbm_orig_cv_results$cv_auc_sd[i] <- sd(cv_auc)
+  gbm_orig_cv_results$cv_bestiter_mean[i] <- mean(cv_bestiter)
+  gbm_orig_cv_results$cv_bestiter_sd[i] <- sd(cv_bestiter)
+}
+
+# Top configurations
+gbm_orig_top <- gbm_orig_cv_results %>%
+  arrange(desc(cv_auc_mean)) %>%
+  head(num_top) %>%
+  mutate(rank = 1:num_top)
+
+cat(sprintf("Top %d Configurations by CV AUC for GBM (Original)\n", num_top))
+print(gbm_orig_top)
+
+# Best configuration
+gbm_orig_best_params <- gbm_orig_cv_results %>% arrange(desc(cv_auc_mean)) %>% slice(1)
+
+# Retrain on full training set
+set.seed(8) # reset random seed
+gbm_orig_final <- gbm(
+  Diagnosis ~ .,
+  data = bc_gbm_orig_train,
+  distribution = "bernoulli",
+  n.trees = 3000,
+  interaction.depth = gbm_orig_best_params$interaction.depth,
+  shrinkage = gbm_orig_best_params$shrinkage,
+  n.minobsinnode = gbm_orig_best_params$n.minobsinnode,
+  bag.fraction = 0.7,
+  verbose = FALSE
+)
+
+# Final evaluation on test set
+bestiter <- suppressWarnings(suppressMessages(gbm.perf(gbm_orig_final, method = "OOB", plot.it = FALSE)))
+gbm_orig_test_pred_prob <- predict(gbm_orig_final, newdata = bc_gbm_orig_test, 
+                                   n.trees = bestiter, type = "response")
+gbm_orig_test_pred_class <- ifelse(gbm_orig_test_pred_prob > 0.5, 1, 0)
+gbm_orig_test_acc <- acc(bc_gbm_orig_test$Diagnosis, gbm_orig_test_pred_class)
+gbm_orig_test_auc <- auc_score(bc_gbm_orig_test$Diagnosis, gbm_orig_test_pred_prob, levels = c(0, 1))
+
+cat("\n=== Final Model (GBM Original) ===\n")
+cat(sprintf("Best params: depth = %d, shrinkage = %.2f, minobs = %d\n", 
+            gbm_orig_best_params$interaction.depth,
+            gbm_orig_best_params$shrinkage, gbm_orig_best_params$n.minobsinnode))
+cat(sprintf("CV AUC: %.4f (±%.4f)\n", gbm_orig_best_params$cv_auc_mean, gbm_orig_best_params$cv_auc_sd))
+cat(sprintf("Test Accuracy: %.4f, Test AUC: %.4f\n", gbm_orig_test_acc, gbm_orig_test_auc))
+cat(sprintf("Early stopping at %d trees\n", bestiter))
+```
+
+## Trained on Principal Components (CV Tuned)
+
+```{r gbm-pca-cv}
+# Prepare data
+bc_gbm_pca_train <- bc_train
+bc_gbm_pca_train$Diagnosis <- ifelse(bc_gbm_pca_train$Diagnosis == "M", 1, 0)
+bc_gbm_pca_test <- bc_test
+bc_gbm_pca_test$Diagnosis <- ifelse(bc_gbm_pca_test$Diagnosis == "M", 1, 0)
+
+# Parameter grid (use early stopping, so no need to tune n.trees)
+gbm_pca_grid <- expand.grid(
+  n_pcs = c(5, 7, 10, 12, 15),
+  interaction.depth = c(1, 2, 3, 4),
+  shrinkage = c(0.01, 0.05, 0.1),
+  n.minobsinnode = c(5, 10, 20)
+)
+
+# Initialize CV results
+gbm_pca_cv_results <- gbm_pca_grid %>%
+  mutate(cv_acc_mean = NA_real_, cv_acc_sd = NA_real_,
+         cv_auc_mean = NA_real_, cv_auc_sd = NA_real_,
+         cv_bestiter_mean = NA_real_, cv_bestiter_sd = NA_real_)
+
+# CV loop using shared fold_id
+set.seed(8) # reset random seed
+for (i in 1:nrow(gbm_pca_grid)) {
+  n_pcs_i <- gbm_pca_grid$n_pcs[i]
+  cv_acc <- numeric(K)
+  cv_auc <- numeric(K)
+  cv_bestiter <- numeric(K)
+  
+  for (k in 1:K) {
+    train_k_raw <- bc_gbm_pca_train[fold_id != k, ]
+    valid_k_raw <- bc_gbm_pca_train[fold_id == k, ]
+    
+    # PCA on training fold only
+    pcaobj <- prcomp(train_k_raw[, -1], scale = TRUE)
+    train_pcs <- pcaobj$x[, 1:n_pcs_i, drop = FALSE]
+    valid_scaled <- scale(valid_k_raw[, -1], center = pcaobj$center, scale = pcaobj$scale)
+    valid_pcs <- valid_scaled %*% pcaobj$rotation[, 1:n_pcs_i, drop = FALSE]
+    
+    train_k <- data.frame(Diagnosis = train_k_raw$Diagnosis, train_pcs)
+    valid_k <- data.frame(Diagnosis = valid_k_raw$Diagnosis, valid_pcs)
+    
+    gbm_fit <- gbm(
+      Diagnosis ~ .,
+      data = train_k,
+      distribution = "bernoulli",
+      n.trees = 3000,
+      interaction.depth = gbm_pca_grid$interaction.depth[i],
+      shrinkage = gbm_pca_grid$shrinkage[i],
+      n.minobsinnode = gbm_pca_grid$n.minobsinnode[i],
+      bag.fraction = 0.7,
+      verbose = FALSE
+    )
+    
+    bestiter <- suppressWarnings(suppressMessages(gbm.perf(gbm_fit, method = "OOB", plot.it = FALSE)))
+    pred_prob <- predict(gbm_fit, newdata = valid_k, 
+                         n.trees = bestiter, type = "response")
+    pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+    
+    cv_acc[k] <- acc(valid_k$Diagnosis, pred_class)
+    cv_auc[k] <- auc_score(valid_k$Diagnosis, pred_prob, levels = c(0, 1))
+    cv_bestiter[k] <- bestiter
+  }
+  
+  gbm_pca_cv_results$cv_acc_mean[i] <- mean(cv_acc)
+  gbm_pca_cv_results$cv_acc_sd[i] <- sd(cv_acc)
+  gbm_pca_cv_results$cv_auc_mean[i] <- mean(cv_auc)
+  gbm_pca_cv_results$cv_auc_sd[i] <- sd(cv_auc)
+  gbm_pca_cv_results$cv_bestiter_mean[i] <- mean(cv_bestiter)
+  gbm_pca_cv_results$cv_bestiter_sd[i] <- sd(cv_bestiter)
+}
+
+# Top configurations
+gbm_pca_top <- gbm_pca_cv_results %>%
+  arrange(desc(cv_auc_mean)) %>%
+  head(num_top) %>%
+  mutate(rank = 1:num_top)
+
+cat(sprintf("Top %d Configurations by CV AUC for GBM (PCA)\n", num_top))
+print(gbm_pca_top)
+
+# Best configuration
+gbm_pca_best_params <- gbm_pca_cv_results %>% arrange(desc(cv_auc_mean)) %>% slice(1)
+
+# Retrain on full training set
+set.seed(8) # reset random seed
+pcaobj_final <- prcomp(bc_gbm_pca_train[, -1], scale = TRUE)
+train_pcs_final <- pcaobj_final$x[, 1:gbm_pca_best_params$n_pcs, drop = FALSE]
+test_scaled_final <- scale(bc_gbm_pca_test[, -1], center = pcaobj_final$center, scale = pcaobj_final$scale)
+test_pcs_final <- test_scaled_final %*% pcaobj_final$rotation[, 1:gbm_pca_best_params$n_pcs, drop = FALSE]
+
+train_final <- data.frame(Diagnosis = bc_gbm_pca_train$Diagnosis, train_pcs_final)
+test_final <- data.frame(Diagnosis = bc_gbm_pca_test$Diagnosis, test_pcs_final)
+
+gbm_pca_final <- gbm(
+  Diagnosis ~ .,
+  data = train_final,
+  distribution = "bernoulli",
+  n.trees = 3000,
+  interaction.depth = gbm_pca_best_params$interaction.depth,
+  shrinkage = gbm_pca_best_params$shrinkage,
+  n.minobsinnode = gbm_pca_best_params$n.minobsinnode,
+  bag.fraction = 0.7,
+  verbose = FALSE
+)
+
+# Final evaluation on test set
+bestiter <- suppressWarnings(suppressMessages(gbm.perf(gbm_pca_final, method = "OOB", plot.it = FALSE)))
+gbm_pca_test_pred_prob <- predict(gbm_pca_final, newdata = test_final, 
+                                  n.trees = bestiter, type = "response")
+gbm_pca_test_pred_class <- ifelse(gbm_pca_test_pred_prob > 0.5, 1, 0)
+gbm_pca_test_acc <- acc(test_final$Diagnosis, gbm_pca_test_pred_class)
+gbm_pca_test_auc <- auc_score(test_final$Diagnosis, gbm_pca_test_pred_prob, levels = c(0, 1))
+
+cat("\n=== Final Model (GBM PCA) ===\n")
+cat(sprintf("Best params: n_pcs = %d, depth = %d, shrinkage = %.2f, minobs = %d\n", 
+            gbm_pca_best_params$n_pcs,
+            gbm_pca_best_params$interaction.depth, gbm_pca_best_params$shrinkage, 
+            gbm_pca_best_params$n.minobsinnode))
+cat(sprintf("CV AUC: %.4f (±%.4f)\n", gbm_pca_best_params$cv_auc_mean, gbm_pca_best_params$cv_auc_sd))
+cat(sprintf("Test Accuracy: %.4f, Test AUC: %.4f\n", gbm_pca_test_acc, gbm_pca_test_auc))
+cat(sprintf("Early stopping at %d trees\n", bestiter))
+```
+
+# BART
+
+## Trained on Original Data (CV Tuned)
+
+```{r bart-orig-cv}
+# Prepare data
+bc_bart_orig_train <- bc_train
+bc_bart_orig_train$Diagnosis <- ifelse(bc_bart_orig_train$Diagnosis == "M", 1, 0)
+bc_bart_orig_test <- bc_test
+bc_bart_orig_test$Diagnosis <- ifelse(bc_bart_orig_test$Diagnosis == "M", 1, 0)
+
+X_train_full <- as.matrix(bc_bart_orig_train[, -1])
+y_train_full <- bc_bart_orig_train$Diagnosis
+X_test <- as.matrix(bc_bart_orig_test[, -1])
+y_test <- bc_bart_orig_test$Diagnosis
+
+# Parameter grid
+bart_orig_grid <- expand.grid(
+  ntree = c(50, 100, 200, 500),
+  k = c(1, 2, 3, 4, 5)
+)
+
+# Initialize CV results
+bart_orig_cv_results <- bart_orig_grid %>%
+  mutate(cv_acc_mean = NA_real_, cv_acc_sd = NA_real_,
+         cv_auc_mean = NA_real_, cv_auc_sd = NA_real_)
+
+# CV loop using shared fold_id
+set.seed(8) # reset random seed
+for (i in 1:nrow(bart_orig_grid)) {
+  cv_acc <- numeric(K)
+  cv_auc <- numeric(K)
+  
+  for (k in 1:K) {
+    train_idx <- which(fold_id != k)
+    valid_idx <- which(fold_id == k)
+    
+    X_train_k <- X_train_full[train_idx, ]
+    y_train_k <- y_train_full[train_idx]
+    X_valid_k <- X_train_full[valid_idx, ]
+    y_valid_k <- y_train_full[valid_idx]
+    
+    bart_fit <- bart(
+      x.train = X_train_k,
+      y.train = y_train_k,
+      x.test = X_valid_k,
+      ntree = bart_orig_grid$ntree[i],
+      k = bart_orig_grid$k[i],
+      ndpost = 1000,
+      nskip = 500,
+      verbose = FALSE
+    )
+    
+    pred_prob <- colMeans(pnorm(bart_fit$yhat.test))
+    pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+    
+    cv_acc[k] <- acc(y_valid_k, pred_class)
+    cv_auc[k] <- auc_score(y_valid_k, pred_prob, levels = c(0, 1))
+  }
+  
+  bart_orig_cv_results$cv_acc_mean[i] <- mean(cv_acc)
+  bart_orig_cv_results$cv_acc_sd[i] <- sd(cv_acc)
+  bart_orig_cv_results$cv_auc_mean[i] <- mean(cv_auc)
+  bart_orig_cv_results$cv_auc_sd[i] <- sd(cv_auc)
+}
+
+# Top configurations
+bart_orig_top <- bart_orig_cv_results %>%
+  arrange(desc(cv_auc_mean)) %>%
+  head(num_top) %>%
+  mutate(rank = 1:num_top)
+
+cat(sprintf("Top %d Configurations by CV AUC for BART (Original)\n", num_top))
+print(bart_orig_top)
+
+# Best configuration
+bart_orig_best_params <- bart_orig_cv_results %>% arrange(desc(cv_auc_mean)) %>% slice(1)
+
+# Retrain on full training set
+set.seed(8) # reset random seed
+bart_orig_final <- bart(
+  x.train = X_train_full,
+  y.train = y_train_full,
+  x.test = X_test,
+  ntree = bart_orig_best_params$ntree,
+  k = bart_orig_best_params$k,
+  ndpost = 1000,
+  nskip = 500,
+  verbose = FALSE
+)
+
+# Final evaluation on test set
+bart_orig_test_pred_prob <- colMeans(pnorm(bart_orig_final$yhat.test))
+bart_orig_test_pred_class <- ifelse(bart_orig_test_pred_prob > 0.5, 1, 0)
+bart_orig_test_acc <- acc(y_test, bart_orig_test_pred_class)
+bart_orig_test_auc <- auc_score(y_test, bart_orig_test_pred_prob, levels = c(0, 1))
+
+cat("\n=== Final Model (BART Original) ===\n")
+cat(sprintf("Best params: ntree = %d, k = %.1f\n", 
+            bart_orig_best_params$ntree, bart_orig_best_params$k))
+cat(sprintf("CV AUC: %.4f (±%.4f)\n", bart_orig_best_params$cv_auc_mean, bart_orig_best_params$cv_auc_sd))
+cat(sprintf("Test Accuracy: %.4f, Test AUC: %.4f\n", bart_orig_test_acc, bart_orig_test_auc))
+```
+
+## Trained on Principal Components (CV Tuned)
+
+```{r bart-pca-cv}
+# Prepare data
+bc_bart_pca_train <- bc_train
+bc_bart_pca_train$Diagnosis <- ifelse(bc_bart_pca_train$Diagnosis == "M", 1, 0)
+bc_bart_pca_test <- bc_test
+bc_bart_pca_test$Diagnosis <- ifelse(bc_bart_pca_test$Diagnosis == "M", 1, 0)
+
+# Parameter grid
+bart_pca_grid <- expand.grid(
+  n_pcs = c(5, 7, 10, 12, 15),
+  ntree = c(50, 100, 200, 500),
+  k = c(1, 2, 3, 4, 5)
+)
+
+# Initialize CV results
+bart_pca_cv_results <- bart_pca_grid %>%
+  mutate(cv_acc_mean = NA_real_, cv_acc_sd = NA_real_,
+         cv_auc_mean = NA_real_, cv_auc_sd = NA_real_)
+
+# CV loop using shared fold_id
+set.seed(8) # reset random seed
+for (i in 1:nrow(bart_pca_grid)) {
+  n_pcs_i <- bart_pca_grid$n_pcs[i]
+  cv_acc <- numeric(K)
+  cv_auc <- numeric(K)
+  
+  for (k in 1:K) {
+    train_k_raw <- bc_bart_pca_train[fold_id != k, ]
+    valid_k_raw <- bc_bart_pca_train[fold_id == k, ]
+    
+    # PCA on training fold only
+    pcaobj <- prcomp(train_k_raw[, -1], scale = TRUE)
+    train_pcs <- pcaobj$x[, 1:n_pcs_i, drop = FALSE]
+    valid_scaled <- scale(valid_k_raw[, -1], center = pcaobj$center, scale = pcaobj$scale)
+    valid_pcs <- valid_scaled %*% pcaobj$rotation[, 1:n_pcs_i, drop = FALSE]
+    
+    X_train_k <- as.matrix(train_pcs)
+    y_train_k <- train_k_raw$Diagnosis
+    X_valid_k <- as.matrix(valid_pcs)
+    y_valid_k <- valid_k_raw$Diagnosis
+    
+    bart_fit <- bart(
+      x.train = X_train_k,
+      y.train = y_train_k,
+      x.test = X_valid_k,
+      ntree = bart_pca_grid$ntree[i],
+      k = bart_pca_grid$k[i],
+      ndpost = 1000,
+      nskip = 500,
+      verbose = FALSE
+    )
+    
+    pred_prob <- colMeans(pnorm(bart_fit$yhat.test))
+    pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+    
+    cv_acc[k] <- acc(y_valid_k, pred_class)
+    cv_auc[k] <- auc_score(y_valid_k, pred_prob, levels = c(0, 1))
+  }
+  
+  bart_pca_cv_results$cv_acc_mean[i] <- mean(cv_acc)
+  bart_pca_cv_results$cv_acc_sd[i] <- sd(cv_acc)
+  bart_pca_cv_results$cv_auc_mean[i] <- mean(cv_auc)
+  bart_pca_cv_results$cv_auc_sd[i] <- sd(cv_auc)
+}
+
+# Top configurations
+bart_pca_top <- bart_pca_cv_results %>%
+  arrange(desc(cv_auc_mean)) %>%
+  head(num_top) %>%
+  mutate(rank = 1:num_top)
+
+cat(sprintf("Top %d Configurations by CV AUC for BART (PCA)\n", num_top))
+print(bart_pca_top)
+
+# Best configuration
+bart_pca_best_params <- bart_pca_cv_results %>% arrange(desc(cv_auc_mean)) %>% slice(1)
+
+# Retrain on full training set
+set.seed(8) # reset random seed
+pcaobj_final <- prcomp(bc_bart_pca_train[, -1], scale = TRUE)
+train_pcs_final <- pcaobj_final$x[, 1:bart_pca_best_params$n_pcs, drop = FALSE]
+test_scaled_final <- scale(bc_bart_pca_test[, -1], center = pcaobj_final$center, scale = pcaobj_final$scale)
+test_pcs_final <- test_scaled_final %*% pcaobj_final$rotation[, 1:bart_pca_best_params$n_pcs, drop = FALSE]
+
+bart_pca_final <- bart(
+  x.train = as.matrix(train_pcs_final),
+  y.train = bc_bart_pca_train$Diagnosis,
+  x.test = as.matrix(test_pcs_final),
+  ntree = bart_pca_best_params$ntree,
+  k = bart_pca_best_params$k,
+  ndpost = 1000,
+  nskip = 500,
+  verbose = FALSE
+)
+
+# Final evaluation on test set
+bart_pca_test_pred_prob <- colMeans(pnorm(bart_pca_final$yhat.test))
+bart_pca_test_pred_class <- ifelse(bart_pca_test_pred_prob > 0.5, 1, 0)
+bart_pca_test_acc <- acc(bc_bart_pca_test$Diagnosis, bart_pca_test_pred_class)
+bart_pca_test_auc <- auc_score(bc_bart_pca_test$Diagnosis, bart_pca_test_pred_prob, levels = c(0, 1))
+
+cat("\n=== Final Model (BART PCA) ===\n")
+cat(sprintf("Best params: n_pcs = %d, ntree = %d, k = %.1f\n", 
+            bart_pca_best_params$n_pcs, bart_pca_best_params$ntree, bart_pca_best_params$k))
+cat(sprintf("CV AUC: %.4f (±%.4f)\n", bart_pca_best_params$cv_auc_mean, bart_pca_best_params$cv_auc_sd))
+cat(sprintf("Test Accuracy: %.4f, Test AUC: %.4f\n", bart_pca_test_acc, bart_pca_test_auc))
+```
+
+# Summary
+
+```{r summary}
+# Compare all best models
+comparison <- tibble(
+  Model = c("RF (Original)", "RF (PCA)", 
+            "GBM (Original)", "GBM (PCA)",
+            "BART (Original)", "BART (PCA)"),
+  CV_AUC = c(rf_orig_best_params$cv_auc_mean, rf_pca_best_params$cv_auc_mean,
+             gbm_orig_best_params$cv_auc_mean, gbm_pca_best_params$cv_auc_mean,
+             bart_orig_best_params$cv_auc_mean, bart_pca_best_params$cv_auc_mean),
+  CV_AUC_SD = c(rf_orig_best_params$cv_auc_sd, rf_pca_best_params$cv_auc_sd,
+                gbm_orig_best_params$cv_auc_sd, gbm_pca_best_params$cv_auc_sd,
+                bart_orig_best_params$cv_auc_sd, bart_pca_best_params$cv_auc_sd),
+  Test_Accuracy = c(rf_orig_test_acc, rf_pca_test_acc,
+                    gbm_orig_test_acc, gbm_pca_test_acc,
+                    bart_orig_test_acc, bart_pca_test_acc),
+  Test_AUC = c(rf_orig_test_auc, rf_pca_test_auc,
+               gbm_orig_test_auc, gbm_pca_test_auc,
+               bart_orig_test_auc, bart_pca_test_auc)
+) %>%
+  arrange(desc(Test_AUC))
+
+cat("=== Final Comparison of Best Models ===\n")
+cat("(Hyperparameters selected via 5-fold CV on training set)\n")
+cat("(Same CV folds used across all models for fair comparison)\n")
+cat("(Final evaluation on held-out test set)\n\n")
+print(comparison)
+```
+
+# Appendix: Best Parameters Summary
+
+```{r best-params-summary}
+cat("=== Best Hyperparameters for Each Model ===\n\n")
+
+cat("RF (Original): mtry =", rf_orig_best_params$mtry, 
+    ", nodesize =", rf_orig_best_params$nodesize, "\n")
+
+cat("RF (PCA): n_pcs =", rf_pca_best_params$n_pcs,
+    ", mtry =", rf_pca_best_params$mtry, 
+    ", nodesize =", rf_pca_best_params$nodesize, "\n")
+
+cat("GBM (Original): depth =", gbm_orig_best_params$interaction.depth,
+    ", shrinkage =", gbm_orig_best_params$shrinkage,
+    ", minobs =", gbm_orig_best_params$n.minobsinnode, "\n")
+
+cat("GBM (PCA): n_pcs =", gbm_pca_best_params$n_pcs,
+    ", depth =", gbm_pca_best_params$interaction.depth,
+    ", shrinkage =", gbm_pca_best_params$shrinkage,
+    ", minobs =", gbm_pca_best_params$n.minobsinnode, "\n")
+
+cat("BART (Original): ntree =", bart_orig_best_params$ntree,
+    ", k =", bart_orig_best_params$k, "\n")
+
+cat("BART (PCA): n_pcs =", bart_pca_best_params$n_pcs,
+    ", ntree =", bart_pca_best_params$ntree,
+    ", k =", bart_pca_best_params$k, "\n")
+```
